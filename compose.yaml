@@ -1,0 +1,81 @@
+x-backend: &backend
+  image: api-monitoring-backend:local
+  build: ./backend
+  environment:
+    DATABASE_URL: postgresql+psycopg://monitor:monitor@db:5432/monitoring
+    ALLOWED_MONITOR_HOSTS: ${ALLOWED_MONITOR_HOSTS:-demo}
+    CHECKER_CONCURRENCY: ${CHECKER_CONCURRENCY:-8}
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: monitoring
+      POSTGRES_USER: monitor
+      POSTGRES_PASSWORD: monitor
+    volumes:
+      - monitoring-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U monitor -d monitoring"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    <<: *backend
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    <<: *backend
+    command: ["uvicorn", "monitoring.api:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/api/health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  checker:
+    <<: *backend
+    command: ["python", "-m", "monitoring.checker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      demo:
+        condition: service_healthy
+    restart: unless-stopped
+
+  demo:
+    <<: *backend
+    environment: {}
+    command: ["uvicorn", "monitoring.demo:app", "--host", "0.0.0.0", "--port", "8001"]
+    ports:
+      - "127.0.0.1:${DEMO_PORT:-8001}:8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8001/control', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "127.0.0.1:${DASHBOARD_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+      demo:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  monitoring-data:
