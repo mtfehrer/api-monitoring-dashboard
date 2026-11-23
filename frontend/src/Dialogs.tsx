@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { FlaskConical } from 'lucide-react'
-import { ApiError, DEMO_CONTROL, MONITORS, request, send, type DemoBehavior, type DemoEndpoint, type Monitor } from './api'
+import { ApiError, DEMO_CONTROL, MONITORS, REQUEST_METHODS, request, send, type DemoBehavior, type DemoEndpoint, type Monitor } from './api'
 import { ErrorBanner, Modal } from './ui'
 
 function Field({ name, label, error, children }: {
@@ -20,6 +20,11 @@ export function MonitorDialog({ monitor, onClose, onSaved }: {
 }) {
   const [name, setName] = useState(monitor?.name ?? '')
   const [url, setUrl] = useState(monitor?.url ?? '')
+  const [method, setMethod] = useState<Monitor['method']>(monitor?.method ?? 'GET')
+  const [headers, setHeaders] = useState('')
+  const [body, setBody] = useState('')
+  const [replaceHeaders, setReplaceHeaders] = useState(false)
+  const [replaceBody, setReplaceBody] = useState(false)
   const [interval, setInterval] = useState(String(monitor?.interval_seconds ?? 60))
   const [timeout, setTimeout] = useState(String(monitor?.timeout_seconds ?? 5))
   const [status, setStatus] = useState(String(monitor?.expected_status ?? 200))
@@ -27,20 +32,38 @@ export function MonitorDialog({ monitor, onClose, onSaved }: {
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [error, setError] = useState('')
 
-  function field(name: string) {
+  function field(name: string, hint?: string) {
     return {
       id: name, name,
       'aria-invalid': !!errors[name],
-      'aria-describedby': errors[name] ? `${name}-error` : undefined,
+      'aria-describedby': [hint, errors[name] && `${name}-error`].filter(Boolean).join(' ') || undefined,
     }
   }
 
   async function submit(event: FormEvent) {
     event.preventDefault()
-    setBusy(true)
     setError('')
+    const saveHeaders = replaceHeaders || (!monitor?.has_request_headers && headers.trim() !== '')
+    const saveBody = replaceBody || (!monitor?.has_request_body && body !== '')
+    const requestHeaders = new Map<string, string>()
+    for (const line of saveHeaders ? headers.split('\n') : []) {
+      if (!line.trim()) continue
+      const separator = line.indexOf(':')
+      const name = line.slice(0, separator).trim().toLowerCase()
+      if (separator < 1 || !name || requestHeaders.has(name)) {
+        setErrors({ request_headers: 'Enter one unique header per line in Name: value format.' })
+        return
+      }
+      requestHeaders.set(name, line.slice(separator + 1).trim())
+    }
+    setBusy(true)
     setErrors({})
-    const editable = { name, interval_seconds: Number(interval), timeout_seconds: Number(timeout) }
+    const editable = {
+      name, interval_seconds: Number(interval), timeout_seconds: Number(timeout),
+      ...(method !== monitor?.method && { method }),
+      ...(saveHeaders && { request_headers: Object.fromEntries(requestHeaders) }),
+      ...(saveBody && { request_body: body || null }),
+    }
     try {
       const saved = monitor
         ? await send<Monitor>(`${MONITORS}/${monitor.id}`, 'PATCH', editable)
@@ -57,6 +80,9 @@ export function MonitorDialog({ monitor, onClose, onSaved }: {
   function useDemo() {
     setName('Demo API')
     setUrl('http://demo:8001/health/primary')
+    setMethod('GET')
+    setHeaders('')
+    setBody('')
     setInterval('5')
     setTimeout('2')
     setStatus('200')
@@ -74,10 +100,17 @@ export function MonitorDialog({ monitor, onClose, onSaved }: {
           <input {...field('name')} value={name} onChange={event => setName(event.target.value)}
             placeholder="Orders API" required maxLength={100} autoFocus />
         </Field>
-        <Field name="url" label="Health endpoint URL" error={errors.url}>
-          <input {...field('url')} type="url" value={url} onChange={event => setUrl(event.target.value)}
-            placeholder="https://api.example.com/health" required readOnly={!!monitor} />
-        </Field>
+        <div className="request-target">
+          <Field name="method" label="Method" error={errors.method}>
+            <select {...field('method')} value={method} onChange={event => setMethod(event.target.value as Monitor['method'])}>
+              {REQUEST_METHODS.map(option => <option key={option}>{option}</option>)}
+            </select>
+          </Field>
+          <Field name="url" label="Endpoint URL" error={errors.url}>
+            <input {...field('url')} type="url" value={url} onChange={event => setUrl(event.target.value)}
+              placeholder="https://api.example.com/health" required readOnly={!!monitor} />
+          </Field>
+        </div>
         <div className="field-grid">
           <Field name="interval_seconds" label="Interval (s)" error={errors.interval_seconds}>
             <input {...field('interval_seconds')} type="number" value={interval} min={5} max={3600}
@@ -92,6 +125,31 @@ export function MonitorDialog({ monitor, onClose, onSaved }: {
               onChange={event => setStatus(event.target.value)} required readOnly={!!monitor} />
           </Field>
         </div>
+        {monitor?.has_request_headers && <label className="request-option">
+          <input type="checkbox" checked={replaceHeaders} onChange={event => setReplaceHeaders(event.target.checked)} />
+          Replace saved headers
+        </label>}
+        {(!monitor?.has_request_headers || replaceHeaders) &&
+          <Field name="request_headers" label="Request headers (optional)" error={errors.request_headers}>
+            <textarea {...field('request_headers', 'headers-hint')} rows={2} value={headers}
+              onChange={event => setHeaders(event.target.value)} placeholder="Accept: application/json"
+              autoComplete="off" spellCheck={false} />
+            <span className="muted" id="headers-hint">
+              {replaceHeaders ? 'Leave blank to clear saved headers. ' : ''}Use one Name: value pair per line.
+            </span>
+          </Field>}
+        {monitor?.has_request_body && <label className="request-option">
+          <input type="checkbox" checked={replaceBody} onChange={event => setReplaceBody(event.target.checked)} />
+          Replace saved body
+        </label>}
+        {(!monitor?.has_request_body || replaceBody) &&
+          <Field name="request_body" label="Request body (optional)" error={errors.request_body}>
+            <textarea {...field('request_body', 'body-hint')} rows={2} value={body} maxLength={65536}
+              onChange={event => setBody(event.target.value)} autoComplete="off" spellCheck={false} />
+            <span className="muted" id="body-hint">
+              {replaceBody ? 'Leave blank to clear the saved body. ' : ''}Set a Content-Type header if the API requires one.
+            </span>
+          </Field>}
         <footer className="dialog-actions">
           <button className="button button-secondary" type="button" onClick={onClose}>Cancel</button>
           <button className="button button-primary" type="submit" disabled={busy}>

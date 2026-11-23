@@ -1,7 +1,8 @@
+import re
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, StringConstraints, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, PlainSerializer, StringConstraints, field_validator
 
 from .config import validate_target
 
@@ -12,6 +13,43 @@ MonitorName = Annotated[str, StringConstraints(strip_whitespace=True, min_length
 Interval = Annotated[int, Field(strict=True, ge=5, le=3600)]
 Timeout = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
 StatusCode = Annotated[int, Field(strict=True, ge=100, le=599)]
+RequestMethod = Literal["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"]
+HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+HEADER_VALUE = re.compile(r"[\t\x20-\x7e]*")
+MANAGED_HEADERS = {
+    "connection", "content-length", "expect", "host", "keep-alive", "proxy-authorization",
+    "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade",
+}
+
+
+def validate_headers(headers: dict[str, str]) -> dict[str, str]:
+    normalized = {}
+    for name, value in headers.items():
+        if not HEADER_NAME.fullmatch(name):
+            raise ValueError("Enter valid HTTP header names.")
+        name = name.lower()
+        if name in MANAGED_HEADERS:
+            raise ValueError(f"The checker manages the {name} header.")
+        if name in normalized:
+            raise ValueError("Each header name can be used once.")
+        if not HEADER_VALUE.fullmatch(value):
+            raise ValueError("Header values must use ASCII and fit on one line.")
+        normalized[name] = value.strip(" \t")
+    return normalized
+
+
+def validate_body(body: str) -> str:
+    try:
+        body.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError("Enter a UTF-8 text body.") from exc
+    if "\x00" in body:
+        raise ValueError("Request body cannot contain null characters.")
+    return body
+
+
+RequestHeaders = Annotated[dict[str, str], Field(max_length=50), AfterValidator(validate_headers)]
+RequestBody = Annotated[str, StringConstraints(max_length=65536), AfterValidator(validate_body)]
 
 
 class MonitorCreate(BaseModel):
@@ -19,6 +57,9 @@ class MonitorCreate(BaseModel):
 
     name: MonitorName
     url: Annotated[str, StringConstraints(min_length=1, max_length=2048)]
+    method: RequestMethod = "GET"
+    request_headers: RequestHeaders = Field(default_factory=dict, repr=False)
+    request_body: RequestBody | None = Field(default=None, repr=False)
     interval_seconds: Interval = 60
     expected_status: StatusCode = 200
     timeout_seconds: Timeout = 5
@@ -30,11 +71,14 @@ class MonitorEdit(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: MonitorName | None = None
+    method: RequestMethod | None = None
+    request_headers: RequestHeaders | None = Field(default=None, repr=False)
+    request_body: RequestBody | None = Field(default=None, repr=False)
     interval_seconds: Interval | None = None
     timeout_seconds: Timeout | None = None
     enabled: Annotated[bool, Field(strict=True)] | None = None
 
-    @field_validator("*")
+    @field_validator("name", "method", "request_headers", "interval_seconds", "timeout_seconds", "enabled")
     @classmethod
     def disallow_null(cls, value):
         if value is None:
@@ -70,6 +114,9 @@ class MonitorView(Record):
     id: int
     name: str
     url: str
+    method: RequestMethod
+    has_request_headers: bool
+    has_request_body: bool
     interval_seconds: int
     expected_status: int
     timeout_seconds: float

@@ -124,7 +124,7 @@ function Detail({ id }: { id: string }) {
       <header className="page-heading detail-heading">
         <div className="detail-title">
           <div className="title-line"><h1>{monitor.name}</h1>{status && <Badge tone={status[1]}>{status[0]}</Badge>}</div>
-          <p><code>{monitor.url}</code></p>
+          <p><code>{monitor.method} {monitor.url}</code></p>
         </div>
         <div className="heading-actions">
           <button className="button button-secondary" disabled={busy} onClick={toggleEnabled}>

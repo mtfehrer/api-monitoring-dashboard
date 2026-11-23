@@ -18,10 +18,15 @@ export interface Incident {
   resolved_at: string | null
 }
 
+export const REQUEST_METHODS = ['GET', 'HEAD', 'OPTIONS', 'POST', 'PUT', 'PATCH', 'DELETE'] as const
+
 export interface Monitor {
   id: number
   name: string
   url: string
+  method: typeof REQUEST_METHODS[number]
+  has_request_headers: boolean
+  has_request_body: boolean
   interval_seconds: number
   expected_status: number
   timeout_seconds: number
@@ -87,7 +92,7 @@ export async function request<T>(path: string, options?: RequestInit): Promise<T
   const detail = body.detail
   const fields = Array.isArray(detail)
     ? Object.fromEntries(detail.map(({ loc, msg }: RequestError) =>
-        [loc.at(-1), msg.replace(/^Value error, /, '')]))
+        [loc[1] ?? loc[0], msg.replace(/^Value error, /, '')]))
     : {}
   const message = typeof detail === 'string' ? detail : `Request failed (HTTP ${response.status}).`
   throw new ApiError(message, response.status, fields)

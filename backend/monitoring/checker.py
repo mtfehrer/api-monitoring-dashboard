@@ -3,7 +3,7 @@ import logging
 import os
 import signal
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from time import perf_counter
 
@@ -30,6 +30,9 @@ class Job:
     scheduled_at: datetime
     generation: int
     missed_slot: bool
+    method: str = "GET"
+    request_headers: dict[str, str] = field(default_factory=dict, repr=False)
+    request_body: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -67,6 +70,8 @@ async def claim_due(
             jobs.append(Job(
                 monitor.id, monitor.url, monitor.expected_status, monitor.timeout_seconds,
                 scheduled_at, monitor.generation, missed_slot,
+                method=monitor.method, request_headers=monitor.request_headers,
+                request_body=monitor.request_body,
             ))
         return jobs
 
@@ -80,7 +85,12 @@ async def probe(client: httpx.AsyncClient, job: Job) -> Observation:
     try:
         url = validate_target(job.url)
         async with asyncio.timeout(job.timeout_seconds):
-            response = await client.send(httpx.Request("GET", url), stream=True, follow_redirects=False)
+            request = httpx.Request(
+                job.method, url,
+                headers={"user-agent": "api-monitoring-dashboard/1.0", **job.request_headers},
+                content=job.request_body,
+            )
+            response = await client.send(request, stream=True, follow_redirects=False)
             status = response.status_code
             if status != job.expected_status:
                 reason = f"Expected HTTP {job.expected_status}, received {status}."
@@ -90,6 +100,8 @@ async def probe(client: httpx.AsyncClient, job: Job) -> Observation:
         reason = "Connection failed."
     except httpx.RemoteProtocolError:
         reason = "Invalid or incomplete HTTP response."
+    except httpx.LocalProtocolError:
+        reason = "Invalid HTTP request."
     except httpx.HTTPError:
         reason = "HTTP request failed."
     except ValueError as exc:

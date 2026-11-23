@@ -1,6 +1,6 @@
 # API Monitoring Dashboard
 
-Monitor HTTP health endpoints from a local React dashboard. The checker records real requests, opens an incident after three consecutive failures, and confirms recovery after two consecutive successes.
+Monitor HTTP APIs from a local React dashboard. The checker records real requests, opens an incident after three consecutive failures, and confirms recovery after two consecutive successes.
 
 ![Monitoring overview showing an outage on Orders API and a slow, healthy Catalog API](docs/overview.png)
 
@@ -15,6 +15,23 @@ docker compose up --build --wait
 Open the [dashboard](http://127.0.0.1:8080). In **Add monitor**, choose **Use demo endpoint** and then **Create monitor**. The preset checks `http://demo:8001/health/primary` every five seconds with a two-second timeout. The first check is due immediately, and the dashboard refreshes every five seconds.
 
 The [API reference](http://127.0.0.1:8000/docs) and [demo endpoint controls](http://127.0.0.1:8001/docs) are also available on loopback. Run `docker compose down` to stop the stack. PostgreSQL stores monitors, observations, incidents, and notifications in the `monitoring-data` volume.
+
+## Monitor a public API
+
+Set the following in the Compose `.env` and run `docker compose up --build --wait` to apply it. Include any other hostnames your existing monitors use.
+
+```dotenv
+ALLOWED_MONITOR_HOSTS=demo,api.github.com,dns.google
+```
+
+In **Add monitor**, use one of these requests with expected status **200**, an interval of **300 seconds**, and a timeout of **15 seconds**.
+
+| Name | Method | Endpoint URL | Request headers | Request body |
+| --- | --- | --- | --- | --- |
+| GitHub Markdown | `POST` | `https://api.github.com/markdown/raw` | `Content-Type: text/plain` | `**API Monitoring Dashboard**` |
+| Google Public DNS | `GET` | `https://dns.google/resolve?name=example.com&type=A` | `Accept: application/dns-json` | Leave blank |
+
+GitHub renders the supplied Markdown without changing repository data. Google Public DNS looks up the record specified in the URL. The checker measures the HTTP result, including for APIs that report application-level errors inside a 200 response. [GitHub REST API documentation](https://docs.github.com/en/rest/guides/scripting-with-the-rest-api-and-javascript) · [Google Public DNS JSON API](https://developers.google.com/speed/public-dns/docs/doh/json)
 
 ## Walk through an outage
 
@@ -41,7 +58,9 @@ curl -fsS -X PUT http://127.0.0.1:8001/control/primary \
 
 - The API and checker accept exact hostnames from `ALLOWED_MONITOR_HOSTS`. To permit another endpoint, set a comma-separated list in the Compose `.env`, for example `ALLOWED_MONITOR_HOSTS=demo,health.example.com`. Use hostnames reachable from the checker container. The default allowlist is `demo`.
 - Use `DASHBOARD_PORT`, `API_PORT`, and `DEMO_PORT` to change the loopback ports. `CHECKER_CONCURRENCY` defaults to eight. Run a single checker instance.
-- You can edit a monitor's name, interval, and timeout. Editing the interval uses the pending scheduled slot as the cadence anchor. Create a separate monitor to change the URL or expected status.
+- Set the method and optional headers and UTF-8 text body when adding or editing a monitor. For a JSON body, enter the JSON text and set `Content-Type: application/json`. Add query parameters to the URL. For an API token, enter a header such as `Authorization: Bearer YOUR_TOKEN`. PostgreSQL stores header values and bodies, and the dashboard and monitor API only report whether those fields are set. The checker sends the request at every scheduled check, so use endpoints intended for repeated calls.
+- `POST /api/monitors` and `PATCH /api/monitors/{id}` accept `method`, `request_headers` (an object of header names and string values), and `request_body` (text). On PATCH, omit a field to keep it, or send `{}` for headers and `null` for the body to clear them. Existing monitors use `GET` with no custom headers or body after migration.
+- Editing the interval uses the pending scheduled slot as the cadence anchor. Editing request settings starts a fresh failure or recovery streak on the next scheduled check. Create a separate monitor to change the URL or expected status.
 - Pausing clears pending failure and recovery streaks. Resuming schedules a fresh check. Scheduler downtime skips elapsed slots and breaks streaks. A request already in flight during a pause can appear in history without affecting the incident.
 - Checks and metrics share the half-open window `from <= started_at < to`. Use offset-bearing timestamps for `from` and `to`. The default is the preceding 24 hours. Checks are newest first and accept `page` and `page_size`. API timestamps use UTC.
 
@@ -66,8 +85,10 @@ docker stop api-monitoring-test-db
 (cd frontend && npm ci && npm run build)
 ```
 
+With the test database running and `TEST_DATABASE_URL` set, run the opt-in live checks with `(cd backend && RUN_LIVE_API_TESTS=1 python -m pytest -k live_api_check)`. They need outbound HTTPS and send one request each to GitHub and Google Public DNS.
+
 ## How it fits together
 
-FastAPI serves monitor configuration and history. An asyncio checker claims due slots in PostgreSQL, sends one streaming HTTPX GET per slot, and measures time to the response headers. The checker writes each result, incident transition, and notification in one transaction. PostgreSQL constraints deduplicate replays and enforce one open incident per monitor. Nginx serves the React dashboard and proxies its API requests. Recharts plots HTTP response samples and shows interruptions in the series.
+FastAPI serves monitor configuration and history. An asyncio checker claims due slots in PostgreSQL, sends the saved HTTP request once per slot without following redirects, and measures time to the response headers. The checker writes each result, incident transition, and notification in one transaction. PostgreSQL constraints deduplicate replays and enforce one open incident per monitor. Nginx serves the React dashboard and proxies its API requests. Recharts plots HTTP response samples and shows interruptions in the series.
 
 [Original specification](api-monitoring-dashboard-specification.md)

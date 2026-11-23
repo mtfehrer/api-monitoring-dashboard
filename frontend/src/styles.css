@@ -19,7 +19,7 @@
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; }
 a { color: inherit; text-decoration: none; }
-button, select, input { font: inherit; }
+button, select, input, textarea { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: default; opacity: .6; }
 button, a, input, select { -webkit-tap-highlight-color: transparent; }
@@ -382,7 +382,7 @@ dialog::backdrop { background: #111b327d; }
 .preset { justify-self: start; }
 .field { display: grid; align-content: start; gap: 6px; min-width: 0; }
 .field label { font-size: .875rem; font-weight: 650; }
-.field input, .field select {
+.field input, .field select, .field textarea {
   width: 100%;
   padding: 10px;
   min-width: 0;
@@ -409,9 +409,12 @@ dialog::backdrop { background: #111b327d; }
 }
 .field select { padding-right: 26px; }
 .field input[readonly] { background: #f4f6fb; color: var(--muted); }
-.field input[aria-invalid='true'] { border-color: #cf3d54; }
+.field [aria-invalid='true'] { border-color: #cf3d54; }
+.field textarea { resize: vertical; }
 .field-error { color: var(--red); font-size: .875rem; }
 .field-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.request-target { display: grid; grid-template-columns: 105px minmax(0, 1fr); gap: 10px; }
+.request-option { display: flex; align-items: center; gap: 6px; font-size: .875rem; }
 .demo-control {
   display: grid;
   gap: 7px;

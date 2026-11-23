@@ -12,7 +12,7 @@ from sqlalchemy import create_engine, make_url, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from monitoring import api
-from monitoring.checker import Observation, claim_due, record
+from monitoring.checker import Observation, claim_due, probe, record
 from monitoring.db import session
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -189,6 +189,10 @@ async def test_window_metrics_pagination_and_validation(setup):
         ({"timeout_seconds": 5}, "timeout_seconds"), ({"interval_seconds": 4}, "interval_seconds"),
         ({"url": "http://elsewhere/health"}, "url"), ({"url": "http://user@demo:8001/health"}, "url"),
         ({"expected_status": 600}, "expected_status"), ({"name": " "}, "name"),
+        ({"method": "CONNECT"}, "method"), ({"request_headers": {"Host": "other"}}, "request_headers"),
+        ({"request_headers": {"X-Value": "first\r\nsecond"}}, "request_headers"),
+        ({"request_headers": {"Accept": "a", "accept": "b"}}, "request_headers"),
+        ({"request_body": "a\x00b"}, "request_body"),
     ]
     for change, field in invalid_fields:
         payload = {"name": "Valid", "url": "http://demo/health", "interval_seconds": 5, "timeout_seconds": 2, **change}
@@ -206,3 +210,73 @@ async def test_window_metrics_pagination_and_validation(setup):
     for payload in ({"name": None}, {"url": "http://demo/other"}, {"expected_status": 503}):
         assert (await client.patch(path, json=payload)).status_code == 422
     assert (await client.patch(path, json={"name": "Updated", "interval_seconds": 7, "timeout_seconds": 6})).status_code == 200
+
+
+async def test_saved_request_reaches_probe_and_edits_start_a_new_generation(setup):
+    client, sessions = setup
+    path = await create(
+        client, url="http://demo:8001/health?check=1", method="POST", expected_status=201,
+        request_headers={"Content-Type": "application/json", "Authorization": "Bearer test-token"},
+        request_body='{"text":"café"}',
+    )
+    monitor = (await client.get(path)).json()
+    assert monitor["method"] == "POST"
+    assert monitor["has_request_headers"] and monitor["has_request_body"]
+    assert "request_headers" not in monitor and "request_body" not in monitor
+    assert "test-token" not in (await client.get("/api/monitors")).text
+
+    assert (await client.patch(path, json={"name": "Renamed"})).status_code == 200
+    original = await claim(sessions, 0)
+
+    def endpoint(request):
+        assert request.method == "POST"
+        assert request.url.params["check"] == "1"
+        assert request.headers["authorization"] == "Bearer test-token"
+        assert request.headers["content-type"] == "application/json"
+        assert request.headers["user-agent"].startswith("api-monitoring-dashboard/")
+        assert request.content == '{"text":"café"}'.encode()
+        return httpx.Response(201)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(endpoint)) as target:
+        observation = await probe(target, original)
+    assert observation.http_status == 201 and observation.failure_reason is None
+
+    updated = (await client.patch(path, json={
+        "method": "HEAD", "request_headers": {}, "request_body": None,
+    })).json()
+    assert updated["method"] == "HEAD"
+    assert not updated["has_request_headers"] and not updated["has_request_body"]
+    async with sessions() as db:
+        assert await record(db, original, observation)
+    current = await claim(sessions, 5)
+    assert current.generation == original.generation + 1
+    assert current.method == "HEAD" and current.request_headers == {} and current.request_body is None
+    await save(sessions, current, 201)
+    latest = (await client.get(path)).json()["latest_check"]
+    assert latest["success"] and latest["gap_before"]
+
+
+@pytest.mark.skipif(os.getenv("RUN_LIVE_API_TESTS") != "1", reason="Live APIs are opt-in.")
+@pytest.mark.parametrize("name,host,fields", [
+    ("GitHub Markdown", "api.github.com", {
+        "url": "https://api.github.com/markdown/raw", "method": "POST",
+        "request_headers": {"Content-Type": "text/plain"},
+        "request_body": "**API Monitoring Dashboard smoke test**",
+    }),
+    ("Google Public DNS", "dns.google", {
+        "url": "https://dns.google/resolve?name=example.com&type=A", "method": "GET",
+        "request_headers": {"Accept": "application/dns-json"},
+    }),
+])
+async def test_live_api_check(setup, monkeypatch, name, host, fields):
+    client, sessions = setup
+    monkeypatch.setenv("ALLOWED_MONITOR_HOSTS", host)
+    path = await create(client, name=name, interval_seconds=300, timeout_seconds=15, **fields)
+    job = await claim(sessions, 0)
+    async with httpx.AsyncClient(trust_env=False, timeout=None) as target:
+        observation = await probe(target, job)
+    assert observation.http_status == 200, observation
+    async with sessions() as db:
+        assert await record(db, job, observation)
+    latest = (await client.get(path)).json()["latest_check"]
+    assert latest["http_status"] == 200 and latest["success"]

@@ -19,6 +19,7 @@ from .schemas import (
 
 app = FastAPI(title="API Monitoring Dashboard")
 DB = Annotated[AsyncSession, Depends(session)]
+REQUEST_FIELDS = ("method", "request_headers", "request_body")
 
 
 @app.exception_handler(RequestValidationError)
@@ -137,9 +138,14 @@ async def edit_monitor(monitor_id: int, payload: MonitorEdit, db: DB):
             changes.get("timeout_seconds", monitor.timeout_seconds),
             changes.get("interval_seconds", monitor.interval_seconds),
         )
-        if "enabled" in changes and monitor.enabled != changes["enabled"]:
-            monitor.generation += 1
+        toggled = "enabled" in changes and monitor.enabled != changes["enabled"]
+        request_changed = any(
+            field in changes and changes[field] != getattr(monitor, field) for field in REQUEST_FIELDS
+        )
+        if toggled:
             monitor.next_run_at = utcnow() if changes["enabled"] else None
+        if toggled or request_changed:
+            monitor.generation += 1
             monitor.awaiting_since = None
             monitor.failure_streak = monitor.recovery_streak = 0
             monitor.first_failure_at = None

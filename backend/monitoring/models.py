@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Index, Text, UniqueConstraint, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -23,6 +24,9 @@ class Monitor(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str]
     url: Mapped[str]
+    method: Mapped[str] = mapped_column(server_default="GET")
+    request_headers: Mapped[dict[str, str]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    request_body: Mapped[str | None]
     interval_seconds: Mapped[int]
     expected_status: Mapped[int]
     timeout_seconds: Mapped[float]
@@ -34,6 +38,14 @@ class Monitor(Base):
     failure_streak: Mapped[int] = mapped_column(default=0)
     first_failure_at: Mapped[datetime | None]
     recovery_streak: Mapped[int] = mapped_column(default=0)
+
+    @property
+    def has_request_headers(self) -> bool:
+        return bool(self.request_headers)
+
+    @property
+    def has_request_body(self) -> bool:
+        return self.request_body is not None
 
 
 class CheckResult(Base):
